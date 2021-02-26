@@ -373,13 +373,13 @@ class CSPAI(AI):
 
     def calc_equations(self, eq_values):
         eqs = np.array([set() for _ in range(self.width * self.height)]).reshape(self.width, self.height)
-        for x, y in self.exposed_squares:
-            for i in [-1, 0, 1]:
-                for j in [-1, 0, 1]:
-                    if not (i == 0 and j == 0):
-                        if 0 <= x + i < self.width and 0 <= y + j < self.height:
-                            if eq_values[x + i, y + j] is None:
-                                eqs[x, y].add((x + i, y + j))
+        for x, y in self.exposed_squares:  # megnézi az összes felfedett cellát
+            for i in [-1, 0, 1]:  # x irányban a szomszédokat nézze meg
+                for j in [-1, 0, 1]:  # y irányban a szomszédokat
+                    if not (i == 0 and j == 0): # a helyben maradás nem érdekel minket
+                        if 0 <= x + i < self.width and 0 <= y + j < self.height:  # megnézzük hogy még mindig a táblán vagyunk-e
+                            if eq_values[x + i, y + j] is None:  # megnézzük hogy a szomszédos mező amit nézünk az felfedetlen-e
+                                eqs[x, y].add((x + i, y + j))  # beletesszük az egyenletbe a szomszédos mezőt a koordinátáival
         return eqs
 
     def find_mine(self, eqs, eq_values, mines_=set()):

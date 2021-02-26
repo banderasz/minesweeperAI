@@ -3,3 +3,4 @@ pygame==2.0.0.dev6
 pytest
 pytest-cov
 coveralls
+numpy
