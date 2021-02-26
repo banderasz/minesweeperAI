@@ -4,6 +4,7 @@ import enum
 import itertools
 import logging
 import random
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -16,13 +17,14 @@ class GameConfig:
         height (int): Height of the board.
         num_mines (int): Number of mines for the game.
     """
+
     def __init__(self, width=8, height=8, num_mines=10):
         self.width = width
         self.height = height
         self.num_mines = num_mines
 
 
-class GameStatus (enum.Enum):
+class GameStatus(enum.Enum):
     """Game status enum"""
     PLAYING = 1
     VICTORY = 2
@@ -37,6 +39,7 @@ class GameResult:
         victory (bool): Whether the player won.
         num_moves (int): Number of moves in the game.
     """
+
     def __init__(self, victory, num_moves):
         self.victory = victory
         self.num_moves = num_moves
@@ -50,6 +53,7 @@ class Square:
         y (int): Zero-based y position.
         num_mines (int): Number of mines in neighboring squares.
     """
+
     def __init__(self, x, y, num_mines):
         self.x = x
         self.y = y
@@ -71,6 +75,7 @@ class MoveResult:
         status (GameStatus): Status of the current game.
         new_squares (set): The set of Square objects exposed by the selection.
     """
+
     def __init__(self, status, new_squares=()):
         self.status = status
         self.new_squares = set(new_squares)
@@ -273,7 +278,7 @@ class AI(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def next(self):
+    def next(self, state):
         """Get the next move from the AI
 
         Returns:
@@ -297,7 +302,19 @@ class AI(abc.ABC):
         The locations are x,y tuples.
         This is for display only. Override if desired.
         """
-        return []
+        return self._flags
+
+    @flags.setter
+    def flags(self, val):
+        """list: Get a list of guessed mine locations
+
+        The locations are x,y tuples.
+        This is for display only. Override if desired.
+        """
+        self._flags = val
+
+    def append(self, val):
+        self._flags.append(val)
 
 
 class RandomAI(AI):
@@ -305,19 +322,190 @@ class RandomAI(AI):
         self.width = 0
         self.height = 0
         self.exposed_squares = set()
+        self._flags = []
 
     def reset(self, config):
         self.width = config.width
         self.height = config.height
         self.exposed_squares.clear()
+        self._flags.clear()
 
-    def next(self):
+    def next(self, state):
         while True:
             x = random.randint(0, self.width - 1)
             y = random.randint(0, self.height - 1)
-            if (x, y) not in self.exposed_squares:
+            if (x, y) not in self.exposed_squares and (x, y) not in self.flags:
                 break
         return x, y
+
+    def update(self, result):
+        for position in result.new_squares:
+            self.exposed_squares.add((position.x, position.y))
+
+
+class CSPAI(AI):
+    def __init__(self):
+        self.width = 0
+        self.height = 0
+        self.exposed_squares = set()
+        self._flags = []
+
+    def reset(self, config):
+        self.width = config.width
+        self.height = config.height
+        self.exposed_squares.clear()
+        self._flags.clear()
+
+    def next(self, state):
+        eq_values = np.array(state)
+        eqs = self.calc_equations(eq_values)
+        mines, safe = self.find_safe_and_mine(eqs, eq_values)
+        self._flags.extend(mines)
+        if safe:
+            return safe.pop()
+
+        while True:
+            x = random.randint(0, self.width - 1)
+            y = random.randint(0, self.height - 1)
+            if (x, y) not in self.exposed_squares and (x, y) not in self.flags:
+                break
+        return x, y
+
+    def calc_equations(self, eq_values):
+        eqs = np.array([set() for _ in range(self.width * self.height)]).reshape(self.width, self.height)
+        for x, y in self.exposed_squares:
+            for i in [-1, 0, 1]:
+                for j in [-1, 0, 1]:
+                    if not (i == 0 and j == 0):
+                        if 0 <= x + i < self.width and 0 <= y + j < self.height:
+                            if eq_values[x + i, y + j] is None:
+                                eqs[x, y].add((x + i, y + j))
+        return eqs
+
+    def find_mine(self, eqs, eq_values, mines_=set()):
+        mines_ = mines_.copy()
+        mines = set()
+        for x in range(self.width):
+            for y in range(self.height):
+                if eq_values[x][y]:
+                    if eq_values[x][y] == len(eqs[x, y]):
+                        for a, b in eqs[x,y]:
+                            mines.add((a, b))
+
+        for x, y in mines:
+            for i in range(self.width):
+                for j in range(self.height):
+                    if (x, y) in eqs[i, j]:
+                        eqs[i, j] = eqs[i, j] - {(x, y)}
+                        eq_values[i, j] -= 1
+        mines.update(mines_)
+        return eqs, eq_values, mines
+
+
+    def find_safe(self, eqs, eq_values, safe_=set()):
+        safe_ = safe_.copy()
+        safe = set()
+        for x in range(self.width):
+            for y in range(self.height):
+                if eq_values[x][y] == 0:
+                    for a, b in eqs[x, y]:
+                        safe.add((a, b))
+
+        for x, y in safe:
+            for i in range(self.width):
+                for j in range(self.height):
+                    if (x, y) in eqs[i, j]:
+                        eqs[i, j] = eqs[i, j] - {(x, y)}
+        safe.update(safe_)
+        return eqs, eq_values, safe
+
+    def find_safe_and_mine(self, eqs, eq_values):
+        mines_ = set()
+        safe_ = set()
+        eqs_ = copy.deepcopy(eqs)
+        eq_values_ = copy.deepcopy(eq_values)
+        while True:
+            eqs_, eq_values_, mines = self.find_mine(eqs_, eq_values_, mines_)
+            eqs_, eq_values_, safe = self.find_safe(eqs_, eq_values_, safe_)
+
+            if mines == mines_ and safe == safe_:
+                break
+            else:
+                mines_ = mines.copy()
+                safe_ = safe.copy()
+
+
+
+        return mines, safe
+
+
+    # def calc_equations(self, counts):
+    #     eq_values = counts.copy()
+    #     equations = np.array([set() for _ in range(self.width*self.height)]).reshape(self.width,self.height)
+    #     eq_lens = np.zeros((self.width,self.height))
+    #     for i, j in self.exposed_squares:
+    #         for k in [-1, 0, 1]:
+    #             for l in [-1, 0, 1]:
+    #                 if k or l:
+    #                     if self.width > i + k >= 0 and self.height > j + l >= 0:
+    #                         if not (i+k, j+l) in self.exposed_squares:
+    #                             if (i+k, j+l) in self.flags:
+    #                                 eq_values[i][j] -= 1
+    #                             else:
+    #                                 equations[i,j].add((i+k, j+l))
+    #                                 eq_lens[i,j] = len(equations[i,j])
+    #     _mines = set()
+    #     _safe = set()
+    #     mines = set()
+    #     safe = set()
+    #     while True:
+    #         a=1
+    #         for i, j in self.exposed_squares:
+    #             if eq_lens[i,j]:
+    #                 if eq_values[i][j] == eq_lens[i,j]:
+    #                     for j,k in equations[i, j]:
+    #                         mines.add((j,k))
+    #                 elif eq_lens[i][j] == 0:
+    #                     for j,k in equations[i, j]:
+    #                         safe.add((j,k))
+    #
+    #         a = 2
+    #         for i, j in mines:
+    #             for k in range(self.width):
+    #                 for l in range(self.height):
+    #                     if (i,j) in equations[k,l]:
+    #                         equations[k, l].remove((i,j))
+    #                         eq_lens[k][l] -= 1
+    #                         eq_values[k][l] -= 1
+    #
+    #         a = 3
+    #
+    #         for i, j in safe:
+    #             for k in range(self.width):
+    #                 for l in range(self.height):
+    #                     if (i, j) in equations[k, l]:
+    #                         equations[k, l].remove((i, j))
+    #                         eq_lens[k][l] -= 1
+    #
+    #         a=1
+    #         for i, j in self.exposed_squares:
+    #             if eq_lens[i,j]:
+    #                 if eq_values[i][j] == eq_lens[i,j]:
+    #                     for j,k in equations[i, j]:
+    #                         mines.add((j,k))
+    #                 elif eq_lens[i][j] == 0:
+    #                     for j,k in equations[i, j]:
+    #                         safe.add((j,k))
+    #
+    #
+    #         if _mines == mines and _safe == safe:
+    #             break
+    #         else:
+    #             _mines = mines
+    #             _safe = safe
+    #
+    #
+    #     return _mines, _safe
 
     def update(self, result):
         for position in result.new_squares:
@@ -331,6 +519,7 @@ class Runner:
         game (Game): Minesweeper game
         ai (AI): Minesweeper AI
     """
+
     def __init__(self, game, ai):
         self.game = game
         self.ai = ai
@@ -342,7 +531,7 @@ class Runner:
     def __next__(self):
         """Advances the game one move"""
         if not self.game.game_over:
-            coordinates = self.ai.next()
+            coordinates = self.ai.next(self.game.state.copy())
             result = self.game.select(*coordinates)
             self.ai.update(result)
             if result.status == GameStatus.PLAYING:
